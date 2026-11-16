@@ -1,19 +1,29 @@
 package com.custom.zalosub
 
-import android.app.Activity
+import android.Manifest
+import android.app.*
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.webkit.*
 import android.widget.FrameLayout
+import android.widget.Toast
 
 class MainActivity : Activity() {
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val FILE_CHOOSER_RESULT_CODE = 1001
+    private val CHANNEL_ID = "zalo_sub_notify_channel"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        createNotificationChannel()
+        requestNotificationPermission()
 
         webView = WebView(this)
         setContentView(
@@ -32,7 +42,9 @@ class MainActivity : Activity() {
         settings.allowContentAccess = true
         settings.mediaPlaybackRequiresUserGesture = false
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
 
+        // Giả lập Chrome trên Windows để chạy Zalo Web mượt nhất
         settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
         settings.useWideViewPort = true
@@ -43,15 +55,34 @@ class MainActivity : Activity() {
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
+        // Cầu nối nhận thông báo từ Zalo Web đẩy sang Android
+        webView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
+
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 CookieManager.getInstance().flush()
                 injectMobileResponsiveScript()
             }
+
+            // Mở các đường link bên ngoài (YouTube, web...) bằng trình duyệt mặc định
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url?.toString() ?: return false
+                if (url.contains("zalo.me") || url.contains("zadn.vn") || url.contains("zdn.vn")) {
+                    return false
+                }
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (e: Exception) {}
+                return true
+            }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                request?.grant(request.resources)
+            }
+
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
@@ -70,7 +101,85 @@ class MainActivity : Activity() {
             }
         }
 
+        // Hỗ trợ tải file và hình ảnh về thư mục Downloads của điện thoại
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            try {
+                if (url.startsWith("blob:")) {
+                    Toast.makeText(this, "Nhấn giữ vào ảnh để lưu hoặc mở xem toàn màn hình", Toast.LENGTH_SHORT).show()
+                    return@setDownloadListener
+                }
+                val request = DownloadManager.Request(Uri.parse(url))
+                request.setMimeType(mimeType)
+                val cookies = CookieManager.getInstance().getCookie(url)
+                request.addRequestHeader("cookie", cookies)
+                request.addRequestHeader("User-Agent", userAgent)
+                request.setTitle(URLUtil.guessFileName(url, contentDisposition, mimeType))
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                request.setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS,
+                    URLUtil.guessFileName(url, contentDisposition, mimeType)
+                )
+                val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                dm.enqueue(request)
+                Toast.makeText(applicationContext, "Đang tải file xuống máy...", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(applicationContext, "Không thể tải file này", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         webView.loadUrl("https://chat.zalo.me")
+    }
+
+    // Xử lý đẩy thông báo ra thanh trạng thái của Vivo X300
+    inner class WebAppInterface(private val mContext: Context) {
+        @JavascriptInterface
+        fun showNotification(title: String, body: String) {
+            val intent = Intent(mContext, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                mContext, 0, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(mContext, CHANNEL_ID)
+            } else {
+                Notification.Builder(mContext)
+            }
+
+            builder.setSmallIcon(android.R.drawable.sym_action_chat)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+
+            val manager = mContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify((System.currentTimeMillis() % 10000).toInt(), builder.build())
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Tin nhắn Zalo 2",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Thông báo tin nhắn mới từ Zalo Web"
+                enableVibration(true)
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
     }
 
     private fun injectMobileResponsiveScript() {
@@ -79,6 +188,19 @@ class MainActivity : Activity() {
                 if (window.zaloMobileInjected) return;
                 window.zaloMobileInjected = true;
 
+                // 1. Chuyển hướng toàn bộ thông báo của Zalo Web sang thông báo hệ thống Android
+                window.Notification = function(title, options) {
+                    if (window.AndroidBridge) {
+                        window.AndroidBridge.showNotification(title || "Zalo 2", (options && options.body) ? options.body : "Bạn có tin nhắn mới");
+                    }
+                };
+                window.Notification.permission = "granted";
+                window.Notification.requestPermission = function(cb) {
+                    if (cb) cb("granted");
+                    return Promise.resolve("granted");
+                };
+
+                // 2. Chuẩn hóa khung nhìn Mobile
                 let meta = document.querySelector('meta[name="viewport"]');
                 if (!meta) {
                     meta = document.createElement('meta');
@@ -87,12 +209,15 @@ class MainActivity : Activity() {
                 }
                 meta.content = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no";
 
+                // 3. CSS tối ưu giao diện và cảm ứng
                 const style = document.createElement('style');
                 style.innerHTML = `
-                    /* Màn hình danh sách bên ngoài */
+                    * { -webkit-tap-highlight-color: transparent !important; }
+                    ::-webkit-scrollbar { width: 0px !important; background: transparent !important; }
+
                     #conversationListId { width: calc(100vw - 64px) !important; max-width: none !important; }
 
-                    /* Ẩn triệt để mọi tên gọi của thanh màu xanh bên trái khi vào chat */
+                    /* Ẩn hoàn toàn cột màu xanh bên trái khi vào chat */
                     body.show-chat nav,
                     body.show-chat #sidebarNav,
                     body.show-chat #main-tab,
@@ -108,7 +233,7 @@ class MainActivity : Activity() {
                         z-index: -1 !important;
                     }
 
-                    /* Đẩy khung chat lên lớp cao nhất (z-index cực đại) và tràn 100% màn hình */
+                    /* Đẩy khung chat tràn màn hình 100% và co giãn theo bàn phím */
                     #chatViewContainer, main, #chatView {
                         position: fixed !important;
                         top: 0 !important;
@@ -132,16 +257,17 @@ class MainActivity : Activity() {
                         transform: translateX(0) !important;
                     }
 
-                    /* Đảm bảo ô nhập chữ có khoảng cách lề trái rõ ràng, không bao giờ bị che */
+                    /* Ô soạn thảo văn bản rộng rãi, dễ nhìn */
                     #chatInputContainer, .chat-input-container, #input_line_wrapper, .rich-input {
                         width: 100% !important;
                         max-width: 100vw !important;
                         padding-left: 14px !important;
                         padding-right: 10px !important;
+                        font-size: 15px !important;
                         box-sizing: border-box !important;
                     }
 
-                    /* Nút Quay lại nổi trên cùng */
+                    /* Nút Quay lại */
                     #zalo-mobile-back {
                         position: fixed;
                         top: 12px;
@@ -168,11 +294,9 @@ class MainActivity : Activity() {
                 backBtn.onclick = () => document.body.classList.remove('show-chat');
                 document.body.appendChild(backBtn);
 
-                // Hàm tự động quét và đánh dấu thanh công cụ màu xanh bên trái bằng kích thước thật
                 function detectAndTagSidebar() {
                     document.querySelectorAll('div, nav, aside').forEach(el => {
                         const rect = el.getBoundingClientRect();
-                        // Nếu phần tử nằm sát lề trái (left=0), hẹp (<85px) và cao gần hết màn hình
                         if (rect.left === 0 && rect.width > 35 && rect.width <= 85 && rect.height > window.innerHeight * 0.5) {
                             if (!el.id.includes('chat') && !el.contains(document.querySelector('#chatViewContainer'))) {
                                 el.classList.add('zalo-hidden-sidebar');
