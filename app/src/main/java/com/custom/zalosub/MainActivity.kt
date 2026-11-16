@@ -5,6 +5,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -43,38 +44,65 @@ class MainActivity : Activity() {
         settings.mediaPlaybackRequiresUserGesture = false
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.setSupportMultipleWindows(false)
 
-        // Giả lập Chrome trên Windows để chạy Zalo Web mượt nhất
-        settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        // 1. Giả lập User-Agent chuẩn Chrome trên Windows 10
+        settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
-        settings.setSupportZoom(false)
+        settings.setSupportZoom(true)
+        settings.builtInZoomControls = true
+        settings.displayZoomControls = false
 
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
-        // Cầu nối nhận thông báo từ Zalo Web đẩy sang Android
         webView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
 
         webView.webViewClient = object : WebViewClient() {
+            // Tiêm code giả lập phần cứng Windows NGAY KHI TRANG BẮT ĐẦU TẢI để Zalo không phát hiện là điện thoại
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                injectDesktopHardwareSpoof()
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 CookieManager.getInstance().flush()
+                injectDesktopHardwareSpoof()
                 injectMobileResponsiveScript()
             }
 
-            // Mở các đường link bên ngoài (YouTube, web...) bằng trình duyệt mặc định
+            // Chặn tuyệt đối việc Zalo tự mở Chrome hoặc ép tải app khi đang đăng nhập
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
-                if (url.contains("zalo.me") || url.contains("zadn.vn") || url.contains("zdn.vn")) {
+
+                // 1. Chặn các giao thức gọi ứng dụng ngoài (intent://, zalo://, market://)
+                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                    return true
+                }
+
+                // 2. Nếu Zalo cố đẩy sang trang bắt tải Zalo PC/Mobile -> Ép quay lại trang chat
+                if (url.contains("zalo.me/pc") || url.contains("zalo.me/download") || url.contains("play.google.com")) {
+                    view?.loadUrl("https://chat.zalo.me")
+                    return true
+                }
+
+                // 3. Giữ toàn bộ các tên miền xác thực đăng nhập của Zalo chạy bên trong App (KHÔNG mở Chrome)
+                if (url.contains("zalo.me") || url.contains("zaloapp.com") || url.contains("zadn.vn") || url.contains("zdn.vn")) {
                     return false
                 }
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                } catch (e: Exception) {}
-                return true
+
+                // 4. Chỉ mở trình duyệt ngoài khi người dùng bấm vào link tin tức/YouTube trong cuộc trò chuyện
+                if (request.isForMainFrame && request.hasGesture()) {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        return true
+                    } catch (e: Exception) {}
+                }
+                return false
             }
         }
 
@@ -101,11 +129,10 @@ class MainActivity : Activity() {
             }
         }
 
-        // Hỗ trợ tải file và hình ảnh về thư mục Downloads của điện thoại
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             try {
                 if (url.startsWith("blob:")) {
-                    Toast.makeText(this, "Nhấn giữ vào ảnh để lưu hoặc mở xem toàn màn hình", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Nhấn giữ vào ảnh để lưu về máy", Toast.LENGTH_SHORT).show()
                     return@setDownloadListener
                 }
                 val request = DownloadManager.Request(Uri.parse(url))
@@ -121,7 +148,7 @@ class MainActivity : Activity() {
                 )
                 val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                 dm.enqueue(request)
-                Toast.makeText(applicationContext, "Đang tải file xuống máy...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(applicationContext, "Đang tải file xuống...", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 Toast.makeText(applicationContext, "Không thể tải file này", Toast.LENGTH_SHORT).show()
             }
@@ -130,7 +157,24 @@ class MainActivity : Activity() {
         webView.loadUrl("https://chat.zalo.me")
     }
 
-    // Xử lý đẩy thông báo ra thanh trạng thái của Vivo X300
+    // Hàm giả lập thông số phần cứng máy tính Windows 10 để vượt qua vòng kiểm tra QR của Zalo
+    private fun injectDesktopHardwareSpoof() {
+        val spoofJs = """
+            (function() {
+                try {
+                    Object.defineProperty(navigator, 'platform', { get: function() { return 'Win32'; } });
+                    Object.defineProperty(navigator, 'maxTouchPoints', { get: function() { return 0; } });
+                    Object.defineProperty(navigator, 'vendor', { get: function() { return 'Google Inc.'; } });
+                    Object.defineProperty(screen, 'width', { get: function() { return 1920; } });
+                    Object.defineProperty(screen, 'height', { get: function() { return 1080; } });
+                    Object.defineProperty(screen, 'availWidth', { get: function() { return 1920; } });
+                    Object.defineProperty(screen, 'availHeight', { get: function() { return 1040; } });
+                } catch (e) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(spoofJs, null)
+    }
+
     inner class WebAppInterface(private val mContext: Context) {
         @JavascriptInterface
         fun showNotification(title: String, body: String) {
@@ -185,10 +229,9 @@ class MainActivity : Activity() {
     private fun injectMobileResponsiveScript() {
         val jsCode = """
             (function() {
-                if (window.zaloMobileInjected) return;
-                window.zaloMobileInjected = true;
+                if (window.zaloWatcherStarted) return;
+                window.zaloWatcherStarted = true;
 
-                // 1. Chuyển hướng toàn bộ thông báo của Zalo Web sang thông báo hệ thống Android
                 window.Notification = function(title, options) {
                     if (window.AndroidBridge) {
                         window.AndroidBridge.showNotification(title || "Zalo 2", (options && options.body) ? options.body : "Bạn có tin nhắn mới");
@@ -200,117 +243,123 @@ class MainActivity : Activity() {
                     return Promise.resolve("granted");
                 };
 
-                // 2. Chuẩn hóa khung nhìn Mobile
-                let meta = document.querySelector('meta[name="viewport"]');
-                if (!meta) {
-                    meta = document.createElement('meta');
-                    meta.name = "viewport";
-                    document.head.appendChild(meta);
-                }
-                meta.content = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no";
-
-                // 3. CSS tối ưu giao diện và cảm ứng
-                const style = document.createElement('style');
-                style.innerHTML = `
-                    * { -webkit-tap-highlight-color: transparent !important; }
-                    ::-webkit-scrollbar { width: 0px !important; background: transparent !important; }
-
-                    #conversationListId { width: calc(100vw - 64px) !important; max-width: none !important; }
-
-                    /* Ẩn hoàn toàn cột màu xanh bên trái khi vào chat */
-                    body.show-chat nav,
-                    body.show-chat #sidebarNav,
-                    body.show-chat #main-tab,
-                    body.show-chat .nav__tabs,
-                    body.show-chat [class*="sidebar"],
-                    body.show-chat [class*="left-nav"],
-                    body.show-chat .zalo-hidden-sidebar,
-                    body.show-chat #conversationListId {
-                        display: none !important;
-                        width: 0 !important;
-                        opacity: 0 !important;
-                        pointer-events: none !important;
-                        z-index: -1 !important;
+                // Đợi đăng nhập thành công vào màn hình chính rồi mới áp dụng giao diện Mobile
+                const checkLoginInterval = setInterval(function() {
+                    const isLoggedIn = document.querySelector('#conversationListId') || document.querySelector('#sidebarNav') || document.querySelector('#main-tab');
+                    if (isLoggedIn && !window.zaloMobileUIApplied) {
+                        window.zaloMobileUIApplied = true;
+                        clearInterval(checkLoginInterval);
+                        applyMobileUI();
                     }
+                }, 600);
 
-                    /* Đẩy khung chat tràn màn hình 100% và co giãn theo bàn phím */
-                    #chatViewContainer, main, #chatView {
-                        position: fixed !important;
-                        top: 0 !important;
-                        left: 0 !important;
-                        right: 0 !important;
-                        width: 100vw !important;
-                        height: 100dvh !important;
-                        max-width: 100vw !important;
-                        margin: 0 !important;
-                        padding: 0 !important;
-                        z-index: 2147483640 !important;
-                        background: #fff !important;
-                        transform: translateX(100%);
-                        transition: transform 0.15s ease-out;
-                        box-sizing: border-box !important;
+                function applyMobileUI() {
+                    let meta = document.querySelector('meta[name="viewport"]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.name = "viewport";
+                        document.head.appendChild(meta);
                     }
+                    meta.content = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no";
 
-                    body.show-chat #chatViewContainer,
-                    body.show-chat main,
-                    body.show-chat #chatView {
-                        transform: translateX(0) !important;
-                    }
+                    const style = document.createElement('style');
+                    style.innerHTML = `
+                        * { -webkit-tap-highlight-color: transparent !important; }
+                        ::-webkit-scrollbar { width: 0px !important; background: transparent !important; }
 
-                    /* Ô soạn thảo văn bản rộng rãi, dễ nhìn */
-                    #chatInputContainer, .chat-input-container, #input_line_wrapper, .rich-input {
-                        width: 100% !important;
-                        max-width: 100vw !important;
-                        padding-left: 14px !important;
-                        padding-right: 10px !important;
-                        font-size: 15px !important;
-                        box-sizing: border-box !important;
-                    }
+                        #conversationListId { width: calc(100vw - 64px) !important; max-width: none !important; }
 
-                    /* Nút Quay lại */
-                    #zalo-mobile-back {
-                        position: fixed;
-                        top: 12px;
-                        left: 10px;
-                        z-index: 2147483647 !important;
-                        background: #0068ff;
-                        color: white;
-                        border: none;
-                        padding: 6px 10px;
-                        border-radius: 6px;
-                        font-weight: bold;
-                        font-size: 13px;
-                        display: none;
-                        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-                    }
-                    body.show-chat #zalo-mobile-back { display: block !important; }
-                    body.show-chat header { padding-left: 85px !important; }
-                `;
-                document.head.appendChild(style);
-
-                const backBtn = document.createElement('button');
-                backBtn.id = 'zalo-mobile-back';
-                backBtn.innerText = '← Quay lại';
-                backBtn.onclick = () => document.body.classList.remove('show-chat');
-                document.body.appendChild(backBtn);
-
-                function detectAndTagSidebar() {
-                    document.querySelectorAll('div, nav, aside').forEach(el => {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.left === 0 && rect.width > 35 && rect.width <= 85 && rect.height > window.innerHeight * 0.5) {
-                            if (!el.id.includes('chat') && !el.contains(document.querySelector('#chatViewContainer'))) {
-                                el.classList.add('zalo-hidden-sidebar');
-                            }
+                        body.show-chat nav,
+                        body.show-chat #sidebarNav,
+                        body.show-chat #main-tab,
+                        body.show-chat .nav__tabs,
+                        body.show-chat [class*="sidebar"],
+                        body.show-chat [class*="left-nav"],
+                        body.show-chat .zalo-hidden-sidebar,
+                        body.show-chat #conversationListId {
+                            display: none !important;
+                            width: 0 !important;
+                            opacity: 0 !important;
+                            pointer-events: none !important;
+                            z-index: -1 !important;
                         }
-                    });
-                }
 
-                document.addEventListener('click', function(e) {
-                    if (e.target.closest('.msg-item') || e.target.closest('[id^="friend-item"]') || e.target.closest('.conv-item')) {
-                        detectAndTagSidebar();
-                        document.body.classList.add('show-chat');
+                        #chatViewContainer, main, #chatView {
+                            position: fixed !important;
+                            top: 0 !important;
+                            left: 0 !important;
+                            right: 0 !important;
+                            width: 100vw !important;
+                            height: 100dvh !important;
+                            max-width: 100vw !important;
+                            margin: 0 !important;
+                            padding: 0 !important;
+                            z-index: 2147483640 !important;
+                            background: #fff !important;
+                            transform: translateX(100%);
+                            transition: transform 0.15s ease-out;
+                            box-sizing: border-box !important;
+                        }
+
+                        body.show-chat #chatViewContainer,
+                        body.show-chat main,
+                        body.show-chat #chatView {
+                            transform: translateX(0) !important;
+                        }
+
+                        #chatInputContainer, .chat-input-container, #input_line_wrapper, .rich-input {
+                            width: 100% !important;
+                            max-width: 100vw !important;
+                            padding-left: 14px !important;
+                            padding-right: 10px !important;
+                            font-size: 15px !important;
+                            box-sizing: border-box !important;
+                        }
+
+                        #zalo-mobile-back {
+                            position: fixed;
+                            top: 12px;
+                            left: 10px;
+                            z-index: 2147483647 !important;
+                            background: #0068ff;
+                            color: white;
+                            border: none;
+                            padding: 6px 10px;
+                            border-radius: 6px;
+                            font-weight: bold;
+                            font-size: 13px;
+                            display: none;
+                            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                        }
+                        body.show-chat #zalo-mobile-back { display: block !important; }
+                        body.show-chat header { padding-left: 85px !important; }
+                    `;
+                    document.head.appendChild(style);
+
+                    const backBtn = document.createElement('button');
+                    backBtn.id = 'zalo-mobile-back';
+                    backBtn.innerText = '← Quay lại';
+                    backBtn.onclick = () => document.body.classList.remove('show-chat');
+                    document.body.appendChild(backBtn);
+
+                    function detectAndTagSidebar() {
+                        document.querySelectorAll('div, nav, aside').forEach(el => {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.left === 0 && rect.width > 35 && rect.width <= 85 && rect.height > window.innerHeight * 0.5) {
+                                if (!el.id.includes('chat') && !el.contains(document.querySelector('#chatViewContainer'))) {
+                                    el.classList.add('zalo-hidden-sidebar');
+                                }
+                            }
+                        });
                     }
-                }, true);
+
+                    document.addEventListener('click', function(e) {
+                        if (e.target.closest('.msg-item') || e.target.closest('[id^="friend-item"]') || e.target.closest('.conv-item')) {
+                            detectAndTagSidebar();
+                            document.body.classList.add('show-chat');
+                        }
+                    }, true);
+                }
             })();
         """.trimIndent()
 
