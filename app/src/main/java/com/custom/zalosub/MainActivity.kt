@@ -46,7 +46,7 @@ class MainActivity : Activity() {
         settings.cacheMode = WebSettings.LOAD_DEFAULT
         settings.setSupportMultipleWindows(false)
 
-        // 1. Giả lập User-Agent chuẩn Chrome trên Windows 10
+        // Giả lập chuẩn Chrome trên Windows 10
         settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         settings.useWideViewPort = true
@@ -62,7 +62,6 @@ class MainActivity : Activity() {
         webView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
 
         webView.webViewClient = object : WebViewClient() {
-            // Tiêm code giả lập phần cứng Windows NGAY KHI TRANG BẮT ĐẦU TẢI để Zalo không phát hiện là điện thoại
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 injectDesktopHardwareSpoof()
@@ -75,27 +74,18 @@ class MainActivity : Activity() {
                 injectMobileResponsiveScript()
             }
 
-            // Chặn tuyệt đối việc Zalo tự mở Chrome hoặc ép tải app khi đang đăng nhập
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
-
-                // 1. Chặn các giao thức gọi ứng dụng ngoài (intent://, zalo://, market://)
                 if (!url.startsWith("http://") && !url.startsWith("https://")) {
                     return true
                 }
-
-                // 2. Nếu Zalo cố đẩy sang trang bắt tải Zalo PC/Mobile -> Ép quay lại trang chat
                 if (url.contains("zalo.me/pc") || url.contains("zalo.me/download") || url.contains("play.google.com")) {
                     view?.loadUrl("https://chat.zalo.me")
                     return true
                 }
-
-                // 3. Giữ toàn bộ các tên miền xác thực đăng nhập của Zalo chạy bên trong App (KHÔNG mở Chrome)
                 if (url.contains("zalo.me") || url.contains("zaloapp.com") || url.contains("zadn.vn") || url.contains("zdn.vn")) {
                     return false
                 }
-
-                // 4. Chỉ mở trình duyệt ngoài khi người dùng bấm vào link tin tức/YouTube trong cuộc trò chuyện
                 if (request.isForMainFrame && request.hasGesture()) {
                     try {
                         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
@@ -157,7 +147,6 @@ class MainActivity : Activity() {
         webView.loadUrl("https://chat.zalo.me")
     }
 
-    // Hàm giả lập thông số phần cứng máy tính Windows 10 để vượt qua vòng kiểm tra QR của Zalo
     private fun injectDesktopHardwareSpoof() {
         val spoofJs = """
             (function() {
@@ -167,8 +156,6 @@ class MainActivity : Activity() {
                     Object.defineProperty(navigator, 'vendor', { get: function() { return 'Google Inc.'; } });
                     Object.defineProperty(screen, 'width', { get: function() { return 1920; } });
                     Object.defineProperty(screen, 'height', { get: function() { return 1080; } });
-                    Object.defineProperty(screen, 'availWidth', { get: function() { return 1920; } });
-                    Object.defineProperty(screen, 'availHeight', { get: function() { return 1040; } });
                 } catch (e) {}
             })();
         """.trimIndent()
@@ -232,6 +219,16 @@ class MainActivity : Activity() {
                 if (window.zaloWatcherStarted) return;
                 window.zaloWatcherStarted = true;
 
+                // 1. Kỹ thuật Silent Audio Keep-Alive: Giúp WebView không bao giờ bị OriginOS đóng băng ngầm
+                const audioEl = document.createElement('audio');
+                audioEl.setAttribute('src', 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=');
+                audioEl.loop = true;
+                audioEl.volume = 0.001;
+                document.body.appendChild(audioEl);
+                document.addEventListener('click', () => { audioEl.play().catch(e => {}); }, {once: true});
+                setTimeout(() => { audioEl.play().catch(e => {}); }, 2000);
+
+                // 2. Cầu nối bắt thông báo hệ thống và theo dõi document.title
                 window.Notification = function(title, options) {
                     if (window.AndroidBridge) {
                         window.AndroidBridge.showNotification(title || "Zalo 2", (options && options.body) ? options.body : "Bạn có tin nhắn mới");
@@ -243,7 +240,19 @@ class MainActivity : Activity() {
                     return Promise.resolve("granted");
                 };
 
-                // Đợi đăng nhập thành công vào màn hình chính rồi mới áp dụng giao diện Mobile
+                // Theo dõi title thay đổi (Zalo Web tự đổi title thành "(1) Zalo" hoặc tên người nhắn khi có tin mới)
+                let lastTitle = document.title;
+                setInterval(function() {
+                    if (document.title !== lastTitle) {
+                        lastTitle = document.title;
+                        if (lastTitle.includes("(") && lastTitle.includes("Zalo")) {
+                            if (window.AndroidBridge) {
+                                window.AndroidBridge.showNotification("Zalo 2 (Tin nhắn mới)", lastTitle);
+                            }
+                        }
+                    }
+                }, 1000);
+
                 const checkLoginInterval = setInterval(function() {
                     const isLoggedIn = document.querySelector('#conversationListId') || document.querySelector('#sidebarNav') || document.querySelector('#main-tab');
                     if (isLoggedIn && !window.zaloMobileUIApplied) {
