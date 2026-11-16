@@ -90,29 +90,36 @@ class MainActivity : Activity() {
                 const style = document.createElement('style');
                 style.innerHTML = `
                     /* Màn hình danh sách bên ngoài */
-                    #sidebarNav, nav { width: 52px !important; min-width: 52px !important; }
-                    #conversationListId { width: calc(100vw - 52px) !important; max-width: none !important; }
+                    #conversationListId { width: calc(100vw - 64px) !important; max-width: none !important; }
 
-                    /* Ẩn hoàn toàn cột màu xanh bên trái khi đã vào khung chat */
-                    body.show-chat #sidebarNav,
+                    /* Ẩn triệt để mọi tên gọi của thanh màu xanh bên trái khi vào chat */
                     body.show-chat nav,
+                    body.show-chat #sidebarNav,
                     body.show-chat #main-tab,
+                    body.show-chat .nav__tabs,
+                    body.show-chat [class*="sidebar"],
+                    body.show-chat [class*="left-nav"],
+                    body.show-chat .zalo-hidden-sidebar,
                     body.show-chat #conversationListId {
                         display: none !important;
                         width: 0 !important;
+                        opacity: 0 !important;
+                        pointer-events: none !important;
+                        z-index: -1 !important;
                     }
 
-                    /* Khung chat mở rộng 100% màn hình, tự động co giãn theo bàn phím (100dvh) */
-                    #chatViewContainer, main {
+                    /* Đẩy khung chat lên lớp cao nhất (z-index cực đại) và tràn 100% màn hình */
+                    #chatViewContainer, main, #chatView {
                         position: fixed !important;
                         top: 0 !important;
                         left: 0 !important;
+                        right: 0 !important;
                         width: 100vw !important;
                         height: 100dvh !important;
                         max-width: 100vw !important;
-                        margin-left: 0 !important;
-                        padding-left: 0 !important;
-                        z-index: 99999 !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        z-index: 2147483640 !important;
                         background: #fff !important;
                         transform: translateX(100%);
                         transition: transform 0.15s ease-out;
@@ -120,32 +127,26 @@ class MainActivity : Activity() {
                     }
 
                     body.show-chat #chatViewContainer,
-                    body.show-chat main {
+                    body.show-chat main,
+                    body.show-chat #chatView {
                         transform: translateX(0) !important;
                     }
 
-                    /* Đảm bảo ô nhập chữ hiển thị trọn vẹn, không bị tràn lề trái */
+                    /* Đảm bảo ô nhập chữ có khoảng cách lề trái rõ ràng, không bao giờ bị che */
                     #chatInputContainer, .chat-input-container, #input_line_wrapper, .rich-input {
                         width: 100% !important;
                         max-width: 100vw !important;
-                        padding-left: 10px !important;
-                        padding-right: 8px !important;
+                        padding-left: 14px !important;
+                        padding-right: 10px !important;
                         box-sizing: border-box !important;
                     }
 
-                    /* Thu gọn thanh icon công cụ phía trên ô nhập chữ cho vừa màn hình dọc */
-                    .chat-box-bar, #chat-box-bar-id {
-                        display: flex !important;
-                        overflow-x: auto !important;
-                        padding-left: 6px !important;
-                    }
-
-                    /* Tinh chỉnh nút Quay lại nằm gọn góc trên bên trái */
+                    /* Nút Quay lại nổi trên cùng */
                     #zalo-mobile-back {
                         position: fixed;
                         top: 12px;
-                        left: 8px;
-                        z-index: 100000;
+                        left: 10px;
+                        z-index: 2147483647 !important;
                         background: #0068ff;
                         color: white;
                         border: none;
@@ -157,9 +158,7 @@ class MainActivity : Activity() {
                         box-shadow: 0 2px 5px rgba(0,0,0,0.2);
                     }
                     body.show-chat #zalo-mobile-back { display: block !important; }
-                    
-                    /* Đẩy tên nhóm/người chat sang phải một chút để nhường chỗ cho nút Quay lại */
-                    body.show-chat header { padding-left: 82px !important; }
+                    body.show-chat header { padding-left: 85px !important; }
                 `;
                 document.head.appendChild(style);
 
@@ -169,8 +168,22 @@ class MainActivity : Activity() {
                 backBtn.onclick = () => document.body.classList.remove('show-chat');
                 document.body.appendChild(backBtn);
 
+                // Hàm tự động quét và đánh dấu thanh công cụ màu xanh bên trái bằng kích thước thật
+                function detectAndTagSidebar() {
+                    document.querySelectorAll('div, nav, aside').forEach(el => {
+                        const rect = el.getBoundingClientRect();
+                        // Nếu phần tử nằm sát lề trái (left=0), hẹp (<85px) và cao gần hết màn hình
+                        if (rect.left === 0 && rect.width > 35 && rect.width <= 85 && rect.height > window.innerHeight * 0.5) {
+                            if (!el.id.includes('chat') && !el.contains(document.querySelector('#chatViewContainer'))) {
+                                el.classList.add('zalo-hidden-sidebar');
+                            }
+                        }
+                    });
+                }
+
                 document.addEventListener('click', function(e) {
                     if (e.target.closest('.msg-item') || e.target.closest('[id^="friend-item"]') || e.target.closest('.conv-item')) {
+                        detectAndTagSidebar();
                         document.body.classList.add('show-chat');
                     }
                 }, true);
